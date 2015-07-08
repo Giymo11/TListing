@@ -87,7 +87,7 @@ object Main {
 
     val model = pairsList(0).find(pair => pair._1 == "CONFIG[0]").map(_._2).get
     val modelNr = model.dropWhile(!isDigit(_)).takeWhile(isDigit)
-    val serial = pairsList(2).find(pair => pair._1 == "SERIAL_NUMBER").map(_._2).get.replace(model.split(" ")(0), "").replace("\"|\\s|-", "").dropWhile(_ == '0')
+    val serial = pairsList(2).find(pair => pair._1 == "SERIAL_NUMBER").map(_._2).get.replace(model.split(" ")(0), "").replaceAll("\"|\\s|-", "").dropWhile(_ == '0')
     val date = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").format(Calendar.getInstance().getTime)
 
     val dir = new File("./" + modelNr)
@@ -95,6 +95,7 @@ object Main {
       dir.mkdir()
 
     val file = new File(dir, s"$serial - $model.txt")
+
     if(!file.exists())
       file.createNewFile()
 
