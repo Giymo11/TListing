@@ -2,10 +2,12 @@ import java.io._
 import java.net.{InetSocketAddress, Socket, SocketTimeoutException}
 import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.concurrent.atomic.AtomicInteger
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.{Await, Future, Promise}
 import scala.io.{BufferedSource, StdIn}
+import scala.util.{Try, Failure, Success}
 
 /**
  * Created by Giymo11 on 2015-07-07 at 14:08.
@@ -18,43 +20,54 @@ object Main {
 
   def main(args: Array[String]): Unit = {
 
-    val ip = if(args.length == 0) {
+    import scala.concurrent.duration._
+
+    val ips = if(args.length == 0) {
       print("Please enter the IP: ")
-      StdIn.readLine()
+      Seq(StdIn.readLine())
     } else {
-     args(0)
+     args.toSeq
     }
 
-    println()
-
-    def getSocketForPort(port: Int): Future[Socket] = Future {
-      val socket = new Socket()
-      socket.connect(new InetSocketAddress(ip, port), networkingTimeout)
-      socket
-    }
-
-    val promise = Promise[Socket]()
-
-    ports.foreach( getSocketForPort(_) onSuccess {
-      case socket => try {
-        promise.success(socket)
-      } catch {
-        case ex: Exception => //left blank intentionally
+    def tryIp(ip: String): Future[Socket] = {
+      def getSocketForPort(port: Int): Future[Socket] = Future {
+        val socket = new Socket()
+        val addr = new InetSocketAddress(ip, port)
+        try {
+          socket.connect(addr, networkingTimeout)
+        } catch {
+          case ex: Exception => throw new Exception(addr.getAddress.toString)
+        }
+        socket
       }
+
+      val promise = Promise[Socket]()
+
+      var count = new AtomicInteger(ports.size)
+
+      ports.map(getSocketForPort).foreach(_ onComplete {
+        case Success(socket) => promise.trySuccess(socket)
+        case Failure(ex) => if(count.decrementAndGet() == 0) promise.failure(ex)
+      })
+
+      promise.future
+    }
+
+    val sockets = ips.map(tryIp).map(_.map { socket =>
+      goForIt(Analyzer(socket))
+      socket.close()
+      socket.getInetAddress
     })
 
-    try {
-      import scala.concurrent.duration._
-      val analyzer = Analyzer(Await.result(promise.future, 5 seconds))
-      goForIt(analyzer)
-      analyzer.socket.close()
-    } catch {
-      case ex: Exception =>
-        println("Could not reach " + ip + " at ports " + ports.mkString(", "))
-    }
+    val tries = Await.result(Future.sequence(sockets.map(future2try)), Duration.Inf)
+    tries.filter(_ isSuccess).foreach(addr =>  println(s"${{addr.get.toString}} worked"))
+    tries.filter(_ isFailure).foreach(addr =>  println(s"${{addr.failed.get.getMessage}} didn't work"))
+
+    System.exit(0)
   }
 
   def goForIt(analyzer: Analyzer) = {
+
     analyzer.sendCommand("v config")
     analyzer.sendCommand("t list")
     analyzer.sendCommand("v list!")
@@ -68,13 +81,32 @@ object Main {
     // [ ]+ matches any number of spaces
     val pairsList = formatToPairs(responses)
 
+    def isDigit(char: Char): Boolean = {
+      char >= '0' && char <= '9'
+    }
+
     val model = pairsList(0).find(pair => pair._1 == "CONFIG[0]").map(_._2).get
-    val serial = pairsList(2).find(pair => pair._1 == "SERIAL_NUMBER").map(_._2).get.replace("\"", "").dropWhile(_ == "0")
+    val modelNr = model.dropWhile(char => char < '0' || char > '9').takeWhile(isDigit)
+    val serial = pairsList(2).find(pair => pair._1 == "SERIAL_NUMBER").map(_._2).get.replace(s"$modelNr", "").filter(isDigit).dropWhile(_ == '0')
+    val date = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").format(Calendar.getInstance().getTime)
 
-    println("Date: " + new SimpleDateFormat("yyyy-MM-dd").format(Calendar.getInstance().getTime))
-    println(s"Model: $model, Serial: $serial \n")
+    val dir = new File("./" + modelNr)
+    if(!dir.exists())
+      dir.mkdir()
 
-    println(prettyFormat(pairsList))
+    val file = new File(dir, s"$serial - $model.txt")
+    if(!file.exists())
+      file.createNewFile()
+
+    val out = new PrintStream(new FileOutputStream(file, true))
+
+    out.println("Date: " + date)
+    out.println(s"Model: $model, Serial: $serial")
+    out.println()
+    out.println(prettyFormat(pairsList))
+    out.println()
+
+    out.close()
   }
 
   def formatToPairs(responses: Seq[Seq[String]]): Seq[Seq[(String, String)]] = {
@@ -92,12 +124,15 @@ object Main {
       
       pairs.foreach(pair => {
         val tabs = lengthInTabs - pair._1.length / tabInSpaces
-        builder.append(pair._1).append("\t" * tabs).append(pair._2).append("\n")
+        builder.append(pair._1).append("\t" * tabs).append(pair._2).append(System.lineSeparator())
       })
-      
-      builder.append("\n")
+      builder.append(System.lineSeparator())
     })
     builder.mkString
+  }
+
+  def future2try[T](future: Future[T]): Future[Try[T]] = {
+    future.map(Success(_)).recover{ case t: Throwable => Failure(t) }
   }
 }
 
@@ -117,7 +152,7 @@ case class Analyzer(socket: Socket) {
   def readResponses() = {
     val builder = new StringBuilder()
     try {
-      while (in.hasNext)
+      while (true)
         builder.append(in.next())
     } catch {
       case ex: SocketTimeoutException => //left blank intentionally
