@@ -1,13 +1,11 @@
 import java.io._
-import java.net.{SocketTimeoutException, InetSocketAddress, InetAddress, Socket}
-import java.nio.CharBuffer
+import java.net.{InetSocketAddress, Socket, SocketTimeoutException}
 import java.text.SimpleDateFormat
 import java.util.Calendar
 
-import scala.concurrent.{Promise, Await, Future}
-import scala.io.{BufferedSource, StdIn}
-import scala.util.{Failure, Success}
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.{Await, Future, Promise}
+import scala.io.{BufferedSource, StdIn}
 
 /**
  * Created by Giymo11 on 2015-07-07 at 14:08.
@@ -16,6 +14,7 @@ object Main {
 
   val ports = Seq(502, 3000)
   val networkingTimeout = 5000
+  val tabInSpaces = 8
 
   def main(args: Array[String]): Unit = {
 
@@ -26,9 +25,7 @@ object Main {
      args(0)
     }
 
-    println("Hostname: " + ip)
-
-    import scala.concurrent.duration._
+    println()
 
     def getSocketForPort(port: Int): Future[Socket] = Future {
       val socket = new Socket()
@@ -47,15 +44,13 @@ object Main {
     })
 
     try {
+      import scala.concurrent.duration._
       val analyzer = Analyzer(Await.result(promise.future, 5 seconds))
-
       goForIt(analyzer)
-
       analyzer.socket.close()
     } catch {
       case ex: Exception =>
-        ex.printStackTrace()
-        println("Could not reach " + ip + " at ports " + ports.mkString(", ") + " because of " + ex.getMessage)
+        println("Could not reach " + ip + " at ports " + ports.mkString(", "))
     }
   }
 
@@ -64,40 +59,45 @@ object Main {
     analyzer.sendCommand("t list")
     analyzer.sendCommand("v list!")
 
+    val responseLines = analyzer.readResponses()
+
+    val (config, rest) = responseLines.span(_.startsWith("V"))
+    val (tlist, vlist) = rest.span(_.startsWith("T"))
+    val responses = Seq(config.toList, tlist.toList, vlist.toList)
+
     // [ ]+ matches any number of spaces
+    val pairsList = formatToPairs(responses)
 
-    val builder = new StringBuilder()
-    try {
-      while (analyzer.response.hasNext)
-        builder.append(analyzer.response.next())
-    } catch {
-      case ex: SocketTimeoutException => println("Read timed out (as expected)")//do nothing
-    }
+    val model = pairsList(0).find(pair => pair._1 == "CONFIG[0]").map(_._2).get
+    val serial = pairsList(2).find(pair => pair._1 == "SERIAL_NUMBER").map(_._2).get.replace("\"", "").dropWhile(_ == "0")
 
-    val response = new BufferedSource(new ByteArrayInputStream(builder.mkString.getBytes))
+    println("Date: " + new SimpleDateFormat("yyyy-MM-dd").format(Calendar.getInstance().getTime))
+    println(s"Model: $model, Serial: $serial \n")
 
-    println("String converted")
+    println(prettyFormat(pairsList))
+  }
 
-    val pairs = response.getLines().map(_.split("[ ]+").drop(3).mkString(" ")).map(param => {
+  def formatToPairs(responses: Seq[Seq[String]]): Seq[Seq[(String, String)]] = {
+    responses.map(response => response.map(_.split("[ ]+").drop(3).mkString(" ")).map(param => {
       val split = param.split("=")
       split(0) -> split(1)
+    }))
+  }
+
+  def prettyFormat(pairsList: Seq[Seq[(String, String)]]): String = {
+    val builder = new StringBuilder()
+    pairsList.foreach(pairs => {
+      
+      val lengthInTabs = pairs.maxBy(pair => pair._1.length)._1.length / tabInSpaces + 1
+      
+      pairs.foreach(pair => {
+        val tabs = lengthInTabs - pair._1.length / tabInSpaces
+        builder.append(pair._1).append("\t" * tabs).append(pair._2).append("\n")
+      })
+      
+      builder.append("\n")
     })
-
-    println("Response received")
-
-    val map = pairs.toMap
-
-    println("Map created")
-
-    val model = map("CONFIG[0]")
-    val serial = map("SERIAL_NUMBER").replace("\"", "")
-
-    println("Date: " + new SimpleDateFormat("yyyy-mm-dd").format(Calendar.getInstance().getTime))
-    println(s"Model $model, Serial: $serial \n\n")
-
-    map.foreach(pair => println(s"${{pair._1}}\t${{pair._2}}"))
-
-    println("Response printed")
+    builder.mkString
   }
 }
 
@@ -110,11 +110,19 @@ case class Analyzer(socket: Socket) {
   lazy val in = new BufferedSource(socket.getInputStream)
 
   def sendCommand(command: String): Unit = {
-    println("Sending: " + command)
     out.println(command)
     out.flush()
-    println("Sent")
   }
 
-  def response = in
+  def readResponses() = {
+    val builder = new StringBuilder()
+    try {
+      while (in.hasNext)
+        builder.append(in.next())
+    } catch {
+      case ex: SocketTimeoutException => //left blank intentionally
+    }
+    new BufferedSource(new ByteArrayInputStream(builder.mkString.getBytes)).getLines()
+  }
+
 }
