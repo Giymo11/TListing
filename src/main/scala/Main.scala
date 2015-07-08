@@ -1,5 +1,8 @@
-import java.io.{InputStream, BufferedInputStream, PrintStream}
-import java.net.{InetSocketAddress, InetAddress, Socket}
+import java.io._
+import java.net.{SocketTimeoutException, InetSocketAddress, InetAddress, Socket}
+import java.nio.CharBuffer
+import java.text.SimpleDateFormat
+import java.util.Calendar
 
 import scala.concurrent.{Promise, Await, Future}
 import scala.io.{BufferedSource, StdIn}
@@ -12,8 +15,7 @@ import scala.concurrent.ExecutionContext.Implicits.global
 object Main {
 
   val ports = Seq(502, 3000)
-
-
+  val networkingTimeout = 5000
 
   def main(args: Array[String]): Unit = {
 
@@ -30,7 +32,7 @@ object Main {
 
     def getSocketForPort(port: Int): Future[Socket] = Future {
       val socket = new Socket()
-      socket.connect(new InetSocketAddress(ip, port), 5000)
+      socket.connect(new InetSocketAddress(ip, port), networkingTimeout)
       socket
     }
 
@@ -49,6 +51,7 @@ object Main {
 
       goForIt(analyzer)
 
+      analyzer.socket.close()
     } catch {
       case ex: Exception =>
         ex.printStackTrace()
@@ -62,10 +65,37 @@ object Main {
     analyzer.sendCommand("v list!")
 
     // [ ]+ matches any number of spaces
-    analyzer.response.getLines().map(_.split("[ ]+").drop(3).mkString(" ")).map(param => {
+
+    val builder = new StringBuilder()
+    try {
+      while (analyzer.response.hasNext)
+        builder.append(analyzer.response.next())
+    } catch {
+      case ex: SocketTimeoutException => println("Read timed out (as expected)")//do nothing
+    }
+
+    val response = new BufferedSource(new ByteArrayInputStream(builder.mkString.getBytes))
+
+    println("String converted")
+
+    val pairs = response.getLines().map(_.split("[ ]+").drop(3).mkString(" ")).map(param => {
       val split = param.split("=")
       split(0) -> split(1)
-    }).foreach(println)
+    })
+
+    println("Response received")
+
+    val map = pairs.toMap
+
+    println("Map created")
+
+    val model = map("CONFIG[0]")
+    val serial = map("SERIAL_NUMBER").replace("\"", "")
+
+    println("Date: " + new SimpleDateFormat("yyyy-mm-dd").format(Calendar.getInstance().getTime))
+    println(s"Model $model, Serial: $serial \n\n")
+
+    map.foreach(pair => println(s"${{pair._1}}\t${{pair._2}}"))
 
     println("Response printed")
   }
@@ -73,6 +103,8 @@ object Main {
 
 
 case class Analyzer(socket: Socket) {
+
+  socket.setSoTimeout(Main.networkingTimeout)
 
   val out = new PrintStream(socket.getOutputStream)
   lazy val in = new BufferedSource(socket.getInputStream)
@@ -85,5 +117,4 @@ case class Analyzer(socket: Socket) {
   }
 
   def response = in
-
 }
