@@ -74,7 +74,7 @@ object Main {
 
     val responseLines = analyzer.readResponses()
 
-    val (config, rest) = responseLines.span(_.startsWith("V"))
+    val (config, rest) = responseLines.span(_.startsWith("V")) // important
     val (tlist, vlist) = rest.span(_.startsWith("T"))
     val responses = Seq(config.toList, tlist.toList, vlist.toList)
 
@@ -86,8 +86,8 @@ object Main {
     }
 
     val model = pairsList(0).find(pair => pair._1 == "CONFIG[0]").map(_._2).get
-    val modelNr = model.dropWhile(char => char < '0' || char > '9').takeWhile(isDigit)
-    val serial = pairsList(2).find(pair => pair._1 == "SERIAL_NUMBER").map(_._2).get.replace(s"$modelNr", "").filter(isDigit).dropWhile(_ == '0')
+    val modelNr = model.dropWhile(!isDigit(_)).takeWhile(isDigit)
+    val serial = pairsList(2).find(pair => pair._1 == "SERIAL_NUMBER").map(_._2).get.replace(model.split(" ")(0), "").replace("\"|\\s|-", "").dropWhile(_ == '0')
     val date = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").format(Calendar.getInstance().getTime)
 
     val dir = new File("./" + modelNr)
@@ -98,13 +98,19 @@ object Main {
     if(!file.exists())
       file.createNewFile()
 
-    val out = new PrintStream(new FileOutputStream(file, true))
+    val in = new BufferedSource(new FileInputStream(file))
+    val oldContent = in.getLines().toList
+    in.close()
+
+    val out = new PrintStream(new FileOutputStream(file, false)) // important
 
     out.println("Date: " + date)
     out.println(s"Model: $model, Serial: $serial")
     out.println()
     out.println(prettyFormat(pairsList))
     out.println()
+
+    oldContent.foreach(out.println)
 
     out.close()
   }
@@ -126,7 +132,7 @@ object Main {
         val tabs = lengthInTabs - pair._1.length / tabInSpaces
         builder.append(pair._1).append("\t" * tabs).append(pair._2).append(System.lineSeparator())
       })
-      builder.append(System.lineSeparator())
+      builder.append(System.lineSeparator()) // important
     })
     builder.mkString
   }
@@ -136,10 +142,9 @@ object Main {
   }
 }
 
-
 case class Analyzer(socket: Socket) {
 
-  socket.setSoTimeout(Main.networkingTimeout)
+  socket.setSoTimeout(Main.networkingTimeout) // important (156)
 
   val out = new PrintStream(socket.getOutputStream)
   lazy val in = new BufferedSource(socket.getInputStream)
@@ -159,5 +164,4 @@ case class Analyzer(socket: Socket) {
     }
     new BufferedSource(new ByteArrayInputStream(builder.mkString.getBytes)).getLines()
   }
-
 }
