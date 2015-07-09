@@ -4,13 +4,12 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.concurrent.atomic.AtomicInteger
 
-import org.apache.poi.openxml4j.opc.OPCPackage
 import org.apache.poi.xssf.usermodel.{XSSFCell, XSSFSheet, XSSFWorkbook}
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.{Await, Future, Promise}
 import scala.io.{BufferedSource, StdIn}
-import scala.util.{Try, Failure, Success}
+import scala.util.{Failure, Success, Try}
 
 /**
  * Created by Giymo11 on 2015-07-07 at 14:08.
@@ -52,7 +51,6 @@ object Main {
       analyzer.getParametersAndInitialize()
 
       archive(analyzer)
-
       if(isReport) report(analyzer)
 
       socket.getInetAddress
@@ -60,7 +58,7 @@ object Main {
 
     val tries = Await.result(Future.sequence(sockets.map(future2try)), Duration.Inf)
     tries.filter(_ isSuccess).foreach(addr =>  println(s"${{addr.get.toString}} worked"))
-    tries.filter(_ isFailure).foreach(addr =>  addr.failed.get.printStackTrace())// println(s"${{addr.failed.get.getMessage}} didn't work"))
+    tries.filter(_ isFailure).foreach(addr =>  println(s"${{addr.failed.get.getMessage}} didn't work")) // addr.failed.get.printStackTrace()) //
 
     System.exit(0)
   }
@@ -87,18 +85,7 @@ object Main {
       insertParameters(analyzer, reportSheet, entryColumn)
     } else {
       println("Recording exit of " + analyzer.serial)
-
-      val vlist = analyzer.vlist.get
-
-      val vlistSheet = if(template.getSheet("vlist") == null) template.createSheet("vlist") else template.getSheet("vlist")
-
-      for (row <- vlist.indices) {
-        val current = vlist(row)
-        getCellAt(vlistSheet, row + 1, 'A').setCellValue(current._1)
-        getCellAt(vlistSheet, row + 1, 'B').setCellValue(current._2)
-      }
-      vlistSheet.autoSizeColumn(0)
-
+      insertVlist(analyzer, if (template.getSheet("vlist") == null) template.createSheet("vlist") else template.getSheet("vlist"))
       insertParameters(analyzer, reportSheet, exitColumn)
     }
 
@@ -115,10 +102,8 @@ object Main {
     reportInputStream.foreach(_ close())
 
     if (!isEntry) {
-      println("Deleting " + reportFile.getAbsolutePath)
-      reportFile.setWritable(true)
+      println("Moving " + reportFile.getName)
       reportFile.delete()
-      System.gc()
     }
   }
 
@@ -202,6 +187,16 @@ object Main {
 
     analyzer.config.get.foreach(insertPair)
     analyzer.tlist.get.foreach(insertPair)
+  }
+
+  def insertVlist(analyzer: Analyzer, vlistSheet: XSSFSheet): Unit = {
+    val vlist = analyzer.vlist.get
+    for (row <- vlist.indices) {
+      val current = vlist(row)
+      getCellAt(vlistSheet, row + 1, 'A').setCellValue(current._1)
+      getCellAt(vlistSheet, row + 1, 'B').setCellValue(current._2)
+    }
+    vlistSheet.autoSizeColumn(0)
   }
 
   def getFile(dirName: String, fileName: String) = {
