@@ -61,10 +61,7 @@ object Main {
 
     val tries = Await.result(Future.sequence(sockets.map(future2try)), Duration.Inf)
     tries.filter(_ isSuccess).foreach(addr =>  println(s"${{addr.get.toString}} worked"))
-    tries.filter(_ isFailure).foreach(addr =>  {
-      addr.failed.get.printStackTrace()
-      println(s"${{addr.failed.get.getMessage}} didn't work")
-    })
+    tries.filter(_ isFailure).foreach(addr =>  println(s"${{addr.failed.get.getMessage}} didn't work"))
 
     System.exit(0)
   }
