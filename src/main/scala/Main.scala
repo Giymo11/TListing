@@ -18,7 +18,7 @@ case class Analyzer(socket: Socket) {
 
   lazy val in = new BufferedSource(socket.getInputStream)
   val out = new PrintStream(socket.getOutputStream)
-  var model, modelNr, serial, timestamp, date = ""
+  var model, modelNr, modelFamily, serial, timestamp, date = ""
   var config, tlist, vlist: Option[Seq[(String, String)]] = None
 
   def initializeViaNetwork() = {
@@ -33,12 +33,15 @@ case class Analyzer(socket: Socket) {
     val (configString, rest) = responseLines.span(_.startsWith("V")) // important
     val (tlistString, vlistString) = rest.span(_.startsWith("T"))
 
-    this.config = Some(configString.toSeq.map(formatToPair))
-    this.tlist = Some(tlistString.toSeq.map(formatToPair))
-    this.vlist = Some(vlistString.toSeq.map(formatToPair))
+    def isPair(string: String) = string.contains("=")
+
+    this.config = Some(configString.toSeq.filter(isPair).map(formatToPair))
+    this.tlist = Some(tlistString.toSeq.filter(isPair).map(formatToPair))
+    this.vlist = Some(vlistString.toSeq.filter(isPair).map(formatToPair))
 
     model = config.get.find { case (name, value) => name == "CONFIG[0]" }.map(_._2).get
-    modelNr = model.dropWhile(!_.isDigit).takeWhile(_.isDigit)
+    modelNr = model.takeWhile(_ != ' ')
+    modelFamily = model.dropWhile(!_.isDigit).takeWhile(_.isDigit)
     serial = vlist.get.find { case (name, value) => name == "SERIAL_NUMBER" }.map(_._2).get.replace(model.split(" ")(0), "").replaceAll("\"|\\s|-", "").dropWhile(_ == '0')
     val binaryDate = Calendar.getInstance().getTime
     timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").format(binaryDate)
@@ -94,7 +97,13 @@ object Main {
   val entryColumn = 'E'
   val exitColumn = 'G'
 
+  val vlistSheetName = "Vlist"
+  val vlistRowStart = 3
+  val vlistNameColumn = 'A'
+  val vlistValueColumn = 'C'
+
   val finishedReportsDirectory = "./finished"
+  val excelEnding = "xlsx"
 
   def main(args: Array[String]): Unit = {
 
@@ -115,8 +124,8 @@ object Main {
 
       archive(analyzer)
       if (isReport) {
-        report(analyzer, " Deutsch")
-        report(analyzer, " English")
+        report(analyzer, "Deutsch")
+        report(analyzer, "English")
       }
 
       socket.getInetAddress
@@ -124,14 +133,17 @@ object Main {
 
     val tries = Await.result(Future.sequence(sockets.map(future2try)), Duration.Inf)
     tries.filter(_ isSuccess).foreach(addr =>  println(s"${{addr.get.toString}} worked"))
-    tries.filter(_ isFailure).foreach(addr =>  println(s"${{addr.failed.get.getMessage}} didn't work")) // addr.failed.get.printStackTrace()) //
+    tries.filter(_ isFailure).foreach(addr => {
+      //addr.failed.get.printStackTrace()
+      println(s"${{addr.failed.get.getMessage}} didn't work")
+    }) // addr.failed.get.printStackTrace()) //
 
     System.exit(0)
   }
 
   def report(analyzer: Analyzer, postfix: String): AnyVal = {
     // check if entry or exit
-    val reportName = s"Report for ${{analyzer.serial}} - ${{analyzer.model}}$postfix.xlsx"
+    val reportName = s"Report for ${{analyzer.serial}} - ${{analyzer.model}} $postfix.$excelEnding"
     val reportFile = new File(reportName)
 
     val isEntry = !reportFile.exists()
@@ -154,13 +166,13 @@ object Main {
     } else {
       println("Recording exit of " + analyzer.serial)
       getCellAt(coverSheet, exitDateRow, exitDateColumn).setCellValue(analyzer.date)
-      insertVlist(analyzer, if (template.getSheet("vlist") == null) template.createSheet("vlist") else template.getSheet("vlist"))
+      insertVlist(analyzer, if (template.getSheet(vlistSheetName) == null) template.createSheet(vlistSheetName) else template.getSheet(vlistSheetName))
       insertParameters(analyzer, parameterSheet, exitColumn)
     }
 
     val out = new FileOutputStream(
       if (!isEntry)
-        getFile(finishedReportsDirectory, reportName.replace(s"$postfix.xlsx", "") + " - finished " + analyzer.date + s" - $postfix.xlsx")
+        getFile(finishedReportsDirectory, reportName.replace(s"$postfix.$excelEnding", "") + " - finished " + analyzer.date + s" - $postfix.$excelEnding")
       else
         reportFile
     )
@@ -177,7 +189,7 @@ object Main {
   }
 
   def getEntryTemplate(analyzer: Analyzer, postfix: String): XSSFWorkbook = {
-    val templateName = s"Template for ${{analyzer.modelNr}}$postfix.xlsx"
+    val templateName = s"Template for ${{analyzer.modelNr}} $postfix.$excelEnding"
     val templateFile = new File(templateName)
     if (!templateFile.exists()) {
       println(s"$templateName does not exist!")
@@ -206,12 +218,16 @@ object Main {
 
   def insertVlist(analyzer: Analyzer, vlistSheet: XSSFSheet): Unit = {
     val vlist = analyzer.vlist.get
+    val wrapText = vlistSheet.getWorkbook.createCellStyle()
+    wrapText.setWrapText(true)
+
     for (row <- vlist.indices) {
       val current = vlist(row)
-      getCellAt(vlistSheet, row + 1, 'A').setCellValue(current._1)
-      getCellAt(vlistSheet, row + 1, 'B').setCellValue(current._2)
+      getCellAt(vlistSheet, row + vlistRowStart, vlistNameColumn).setCellValue(current._1)
+      getCellAt(vlistSheet, row + vlistRowStart, vlistValueColumn).setCellStyle(wrapText)
+      getCellAt(vlistSheet, row + vlistRowStart, vlistValueColumn).setCellValue(current._2)
     }
-    vlistSheet.autoSizeColumn(0)
+    vlistSheet.autoSizeColumn(vlistNameColumn - 'A')
   }
 
   def getCellAt(sheet: XSSFSheet, rowIndex: Int, columnIndex: Int): XSSFCell = {
@@ -236,15 +252,7 @@ object Main {
   }
 
   def archive(analyzer: Analyzer) = {
-    val file = getFile("./" + analyzer.modelNr, s"${
-      {
-        analyzer.serial
-      }
-    } - ${
-      {
-        analyzer.model
-      }
-    }.txt")
+    val file = getFile("./" + analyzer.modelFamily, s"${{analyzer.serial}} - ${{analyzer.model}}.txt")
 
     val in = new BufferedSource(new FileInputStream(file))
     val oldContent = in.getLines().toList
@@ -254,15 +262,7 @@ object Main {
 
     val linebreak = System.lineSeparator()
     builder.append("Date: " + analyzer.timestamp).append(linebreak)
-    builder.append(s"Model: ${
-      {
-        analyzer.model
-      }
-    }, Serial: ${
-      {
-        analyzer.serial
-      }
-    }").append(linebreak * 2)
+    builder.append(s"Model: ${{analyzer.model}}, Serial: ${{analyzer.serial}}").append(linebreak * 2)
     builder.append(prettyFormat(analyzer.config.get)).append(linebreak)
     builder.append(prettyFormat(analyzer.tlist.get)).append(linebreak)
     builder.append(prettyFormat(analyzer.vlist.get)).append(linebreak * 3)
