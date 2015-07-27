@@ -103,7 +103,7 @@ object Main {
   val vlistValueColumn = 'C'
 
   val finishedReportsDirectory = "./finished"
-  val excelEnding = "xlsx"
+  val excelEnding = "xlsm"
 
   def main(args: Array[String]): Unit = {
 
@@ -172,7 +172,7 @@ object Main {
 
     val out = new FileOutputStream(
       if (!isEntry)
-        getFile(finishedReportsDirectory, reportName.replace(s"$postfix.$excelEnding", "") + " - finished " + analyzer.date + s" - $postfix.$excelEnding")
+        getFile(finishedReportsDirectory, reportName.replace(s" $postfix.$excelEnding", "") + " - finished " + analyzer.date + s" - $postfix.$excelEnding")
       else
         reportFile
     )
@@ -207,7 +207,10 @@ object Main {
     def insertPair(pair: (String, String), hasUnits: Boolean) = {
       val (name, value) = pair
       parameterMap.get(name) match {
-        case Some(row) => getCellAt(reportSheet, row, column).setCellValue(if (hasUnits) value.takeWhile(_ != ' ') else value) // drop the units on the pairs
+        case Some(row) =>
+          val cell = getCellAt(reportSheet, row, column)
+          if (hasUnits) cell.setCellValue(value.takeWhile(_ != ' ').toDouble) // drop the units on the pairs
+          else cell.setCellValue(value)
         case None => // left blank intentionally
       }
     }
