@@ -82,13 +82,13 @@ object Main {
 
   val coverSheetName = "Cover"
   val modelRow = 9
-  val modelColumn = 'J'
+  val modelColumn = 'K'
   val serialRow = 11
-  val serialColumn = 'J'
+  val serialColumn = 'K'
   val entryDateRow = 12
   val entryDateColumn = 'D'
   val exitDateRow = 12
-  val exitDateColumn = 'J'
+  val exitDateColumn = 'K'
 
   val paramSheetName = "Parameter"
   val paramRowStart = 3
@@ -108,40 +108,39 @@ object Main {
   def main(args: Array[String]): Unit = {
 
     import scala.concurrent.duration._
+    
+    val isReport = args.contains("-r")
+    val isOpening = args.contains("-o")
 
-    val isReport = args.length != 0 && args(0) == "-r"
+    val passedParameters = args.filter(_.charAt(0) != '-')
 
-    val ips = if(isReport || args.length == 0) {
-      print("Please enter the IP: ")
-      Seq(StdIn.readLine())
+    val ips = if(passedParameters.length == 0) {
+      print("Please enter the IPs separated by a space: ")
+      val input = StdIn.readLine()
+      input.split(" ").toSeq
     } else {
-      args.toSeq
+      passedParameters.toSeq
     }
 
-    val sockets = ips.map(tryIp).map(_.map { socket =>
-      val analyzer = Analyzer(socket)
-      analyzer.initializeViaNetwork()
+    val sockets = ips.map(tryIp).map(_.map { analyzer =>
 
-      archive(analyzer)
+      archive(analyzer, openWhenFinished = isOpening && !isReport)
       if (isReport) {
-        report(analyzer, "Deutsch")
-        report(analyzer, "English")
+        report(analyzer, "Deutsch", isOpening)
+        report(analyzer, "English", isOpening)
       }
 
-      socket.getInetAddress
+      analyzer.socket.getInetAddress
     })
 
     val tries = Await.result(Future.sequence(sockets.map(future2try)), Duration.Inf)
     tries.filter(_ isSuccess).foreach(addr =>  println(s"${{addr.get.toString}} worked"))
-    tries.filter(_ isFailure).foreach(addr => {
-      //addr.failed.get.printStackTrace()
-      println(s"${{addr.failed.get.getMessage}} didn't work")
-    }) // addr.failed.get.printStackTrace()) //
+    tries.filter(_ isFailure).foreach(addr => println(s"${{addr.failed.get.getMessage}} didn't work"))
 
     System.exit(0)
   }
 
-  def report(analyzer: Analyzer, postfix: String): AnyVal = {
+  def report(analyzer: Analyzer, postfix: String, openWhenFinished: Boolean): AnyVal = {
     // check if entry or exit
     val reportName = s"Report for ${{analyzer.serial}} - ${{analyzer.model}} $postfix.$excelEnding"
     val reportFile = new File(reportName)
@@ -158,24 +157,24 @@ object Main {
     val coverSheet = template.getSheet(Main.coverSheetName)
 
     if (isEntry) {
-      println("Recording entry of " + analyzer.serial)
+      println(s"Recording entry of ${{analyzer.serial}} $postfix")
       getCellAt(coverSheet, modelRow, modelColumn).setCellValue(analyzer.model)
       getCellAt(coverSheet, serialRow, serialColumn).setCellValue(analyzer.serial)
       getCellAt(coverSheet, entryDateRow, entryDateColumn).setCellValue(analyzer.date)
       insertParameters(analyzer, parameterSheet, entryColumn)
     } else {
-      println("Recording exit of " + analyzer.serial)
+      println(s"Recording entry of ${{analyzer.serial}} $postfix")
       getCellAt(coverSheet, exitDateRow, exitDateColumn).setCellValue(analyzer.date)
       insertVlist(analyzer, if (template.getSheet(vlistSheetName) == null) template.createSheet(vlistSheetName) else template.getSheet(vlistSheetName))
       insertParameters(analyzer, parameterSheet, exitColumn)
     }
 
-    val out = new FileOutputStream(
-      if (!isEntry)
+    val file = if (!isEntry)
         getFile(finishedReportsDirectory, reportName.replace(s" $postfix.$excelEnding", "") + " - finished " + analyzer.date + s" - $postfix.$excelEnding")
       else
         reportFile
-    )
+
+    val out = new FileOutputStream(file)
 
     template.write(out)
     out.flush()
@@ -186,6 +185,9 @@ object Main {
       println("Moving " + reportFile.getName)
       reportFile.delete()
     }
+
+    if(openWhenFinished)
+      FileOpener.open(file.getCanonicalFile)
   }
 
   def getEntryTemplate(analyzer: Analyzer, postfix: String): XSSFWorkbook = {
@@ -254,7 +256,7 @@ object Main {
     file
   }
 
-  def archive(analyzer: Analyzer) = {
+  def archive(analyzer: Analyzer, openWhenFinished: Boolean) = {
     val file = getFile("./" + analyzer.modelFamily, s"${{analyzer.serial}} - ${{analyzer.model}}.txt")
 
     val in = new BufferedSource(new FileInputStream(file))
@@ -274,6 +276,9 @@ object Main {
     val out = new FileOutputStream(file, false) // important
     out.write(builder.mkString.getBytes)
     out.close()
+
+    if(openWhenFinished)
+      FileOpener.open(file.getCanonicalFile)
   }
 
   def prettyFormat(pairs: Seq[(String, String)]): String = {
@@ -289,24 +294,28 @@ object Main {
     builder.mkString
   }
 
-  def tryIp(ip: String): Future[Socket] = {
-    def getSocketForPort(port: Int): Future[Socket] = Future {
+  def tryIp(ip: String): Future[Analyzer] = {
+    def getAnalyzerForPort(port: Int): Future[Analyzer] = Future {
       val socket = new Socket()
       val addr = new InetSocketAddress(ip, port)
+      var analyzer: Option[Analyzer] = None
       try {
         socket.connect(addr, networkingTimeout)
+        val tmp = Analyzer(socket)
+        tmp.initializeViaNetwork()
+        analyzer = Some(tmp)
       } catch {
         case ex: Exception => throw new Exception(addr.getAddress.toString)
       }
-      socket
+      analyzer.get
     }
 
-    val promise = Promise[Socket]()
+    val promise = Promise[Analyzer]()
 
     val count = new AtomicInteger(ports.size)
 
-    ports.map(getSocketForPort).foreach(_ onComplete {
-      case Success(socket) => promise.trySuccess(socket)
+    ports.map(getAnalyzerForPort).foreach(_ onComplete {
+      case Success(analyzer) => promise.trySuccess(analyzer)
       case Failure(ex) => if (count.decrementAndGet() == 0) promise.failure(ex)
     })
 
